@@ -258,6 +258,7 @@
         let selectedFiles = [];
         let incomingFileMetadata = {};
         let knownDevices = {}; // Store device info (id -> name)
+        let saveDirectoryHandle = null;
 
         const toggleSend = document.getElementById('toggle-send');
         const toggleReceive = document.getElementById('toggle-receive');
@@ -414,8 +415,21 @@
             requestModal.classList.add('flex');
         }
 
-        acceptBtn.onclick = () => {
+        acceptBtn.onclick = async () => {
             if (!pendingRequest) return;
+
+            // Prompt for directory once if multi-file transfer is detected
+            if (pendingRequest.files && pendingRequest.files.length > 1 && window.showDirectoryPicker) {
+                try {
+                    saveDirectoryHandle = await window.showDirectoryPicker();
+                } catch (err) {
+                    console.log('Directory picker cancelled or unsupported', err);
+                    saveDirectoryHandle = null;
+                }
+            } else {
+                saveDirectoryHandle = null;
+            }
+
             ws.send(JSON.stringify({
                 type: 'transfer-response',
                 targetId: pendingRequest.senderId,
@@ -649,14 +663,35 @@
                         } catch (err) { console.error('Metadata parse error', err); }
                     } else if (e.data === 'EOF') {
                         const fileName = incomingFileMetadata.name || 'received_file';
-                        console.log('EOF received, saving as:', fileName);
                         const blob = new Blob(receivedChunks);
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = fileName;
-                        a.click();
-                        fileStatusText.textContent = `File ${fileName} received from ${peerName}!`;
+
+                        const saveFile = async () => {
+                            if (saveDirectoryHandle) {
+                                try {
+                                    const fileHandle = await saveDirectoryHandle.getFileHandle(fileName, { create: true });
+                                    const writable = await fileHandle.createWritable();
+                                    await writable.write(blob);
+                                    await writable.close();
+                                    fileStatusText.textContent = `Saved ${fileName} to folder!`;
+                                } catch (err) {
+                                    console.error('Directory write error, falling back', err);
+                                    triggerDownload(blob, fileName);
+                                }
+                            } else {
+                                triggerDownload(blob, fileName);
+                            }
+                        };
+
+                        const triggerDownload = (blob, name) => {
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = name;
+                            a.click();
+                            fileStatusText.textContent = `File ${name} received from ${peerName}!`;
+                        };
+
+                        saveFile();
                         receivedChunks = [];
                         incomingFileMetadata = {};
                     }
