@@ -73,12 +73,8 @@
 
 <body class="font-display min-h-screen flex flex-col selection:bg-primary-blue selection:text-white">
     <header class="flex items-center justify-between px-8 md:px-12 py-5 bg-white z-20">
-        <div class="flex items-center gap-3">
-            <div
-                class="size-11 flex items-center justify-center bg-gradient-to-br from-blue-600 to-blue-400 rounded-xl shadow-lg shadow-blue-500/20">
-                <span class="text-white text-2xl font-black italic tracking-tighter">D</span>
-            </div>
-            <h2 class="text-text-charcoal text-2xl font-extrabold tracking-tight">DropMe</h2>
+        <div class="flex items-center">
+            <img src="Logo2.png" alt="DropMe Logo" class="w-[170px] h-auto object-contain" />
         </div>
         <div class="flex items-center gap-6">
             <div
@@ -132,11 +128,16 @@
                         <p class="text-xl font-bold text-text-charcoal mb-0">Drag & Drop files here</p>
                         <p class="text-text-subtle font-medium text-sm">Direct peer-to-peer transfer</p>
                     </div>
-                    <input type="file" id="file-input" class="hidden" />
+                    <input type="file" id="file-input" class="hidden" multiple />
                     <button id="select-button"
                         class="bg-primary-blue hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-xl transition-all active:scale-95 shadow-lg shadow-blue-500/20 text-sm">
-                        Select File
+                        Select Files
                     </button>
+                </div>
+                <!-- Selected Files List -->
+                <div id="file-list" class="w-full hidden mb-6 space-y-2">
+                    <h3 class="text-xs font-bold text-text-subtle uppercase tracking-wider mb-2">Selected Files</h3>
+                    <div id="file-items-container" class="space-y-2"></div>
                 </div>
                 <!-- Progress Container -->
                 <div id="progress-container"
@@ -254,7 +255,7 @@
         let myId = null;
         let myName = null;
         let peerConnections = {};
-        let selectedFile = null;
+        let selectedFiles = [];
         let incomingFileMetadata = {};
         let knownDevices = {}; // Store device info (id -> name)
 
@@ -267,6 +268,8 @@
         const selectBtn = document.getElementById('select-button');
         const deviceListContainer = document.getElementById('device-list-container');
         const networkNameEl = document.getElementById('network-name');
+        const fileList = document.getElementById('file-list');
+        const fileItemsContainer = document.getElementById('file-items-container');
 
         // Progress Elements
         const progressContainer = document.getElementById('progress-container');
@@ -302,8 +305,7 @@
         // File Selection
         selectBtn.onclick = () => fileInput.click();
         fileInput.onchange = (e) => {
-            selectedFile = e.target.files[0];
-            if (selectedFile) alert(`Ready to send: ${selectedFile.name}`);
+            handleFiles(e.target.files);
         };
 
         // Drag and Drop
@@ -312,8 +314,48 @@
         dropZone.ondrop = (e) => {
             e.preventDefault();
             dropZone.classList.remove('bg-soft-blue/50');
-            selectedFile = e.dataTransfer.files[0];
-            if (selectedFile) alert(`Ready to send: ${selectedFile.name}`);
+            handleFiles(e.dataTransfer.files);
+        };
+
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                // Prevent duplicates
+                if (!selectedFiles.some(f => f.name === file.name && f.size === file.size)) {
+                    selectedFiles.push(file);
+                }
+            });
+            updateFileListUI();
+        }
+
+        function updateFileListUI() {
+            fileItemsContainer.innerHTML = '';
+            if (selectedFiles.length > 0) {
+                fileList.classList.remove('hidden');
+                selectedFiles.forEach((file, index) => {
+                    const item = document.createElement('div');
+                    item.className = "flex items-center justify-between bg-white p-3 rounded-xl border border-border-light shadow-sm";
+                    item.innerHTML = `
+                        <div class="flex items-center gap-3 min-w-0">
+                            <span class="material-symbols-outlined text-primary-blue">insert_drive_file</span>
+                            <div class="flex flex-col min-w-0">
+                                <span class="text-sm font-bold text-text-charcoal truncate">${file.name}</span>
+                                <span class="text-[10px] font-medium text-text-subtle">${formatBytes(file.size)}</span>
+                            </div>
+                        </div>
+                        <button onclick="removeFile(${index})" class="text-red-500 hover:bg-red-50 p-1 rounded-lg transition-colors">
+                            <span class="material-symbols-outlined text-base">close</span>
+                        </button>
+                    `;
+                    fileItemsContainer.appendChild(item);
+                });
+            } else {
+                fileList.classList.add('hidden');
+            }
+        }
+
+        window.removeFile = (index) => {
+            selectedFiles.splice(index, 1);
+            updateFileListUI();
         };
 
         // WebSocket Communication
@@ -358,8 +400,16 @@
         function handleTransferRequest(data) {
             pendingRequest = data;
             requestSenderName.textContent = data.senderName;
-            requestFileName.textContent = data.fileName;
-            requestFileSize.textContent = formatBytes(data.fileSize);
+
+            if (data.files && data.files.length > 1) {
+                requestFileName.textContent = `${data.files.length} files`;
+                const totalSize = data.files.reduce((acc, f) => acc + f.size, 0);
+                requestFileSize.textContent = formatBytes(totalSize);
+            } else {
+                requestFileName.textContent = data.fileName;
+                requestFileSize.textContent = formatBytes(data.fileSize);
+            }
+
             requestModal.classList.remove('hidden');
             requestModal.classList.add('flex');
         }
@@ -376,7 +426,11 @@
             // Show receive progress
             progressContainer.classList.remove('hidden');
             fileStatusTitle.textContent = "Waiting for Transfer";
-            fileStatusText.textContent = `Accepted ${pendingRequest.fileName} from ${pendingRequest.senderName}`;
+            if (pendingRequest.files && pendingRequest.files.length > 1) {
+                fileStatusText.textContent = `Accepted batch from ${pendingRequest.senderName}`;
+            } else {
+                fileStatusText.textContent = `Accepted ${pendingRequest.fileName} from ${pendingRequest.senderName}`;
+            }
         };
 
         declineBtn.onclick = () => {
@@ -429,26 +483,32 @@
         }
 
         async function initiateTransfer(targetId) {
-            if (!selectedFile) {
-                alert('Please select a file first!');
+            if (selectedFiles.length === 0) {
+                alert('Please select at least one file first!');
                 return;
             }
 
             const targetName = knownDevices[targetId] || "Peer";
 
-            // Send request instead of starting WebRTC
+            // Send request with details of all files
             ws.send(JSON.stringify({
                 type: 'transfer-request',
                 targetId: targetId,
                 senderId: myId,
                 senderName: myName,
-                fileName: selectedFile.name,
-                fileSize: selectedFile.size
+                files: selectedFiles.map(f => ({ name: f.name, size: f.size })),
+                // Keep these for backward compatibility or simple case
+                fileName: selectedFiles[0].name,
+                fileSize: selectedFiles[0].size
             }));
 
             // UI Update for sender
             fileStatusTitle.textContent = "Transfer Request";
-            fileStatusText.textContent = `Waiting for ${targetName} to accept...`;
+            if (selectedFiles.length > 1) {
+                fileStatusText.textContent = `Waiting for ${targetName} to accept ${selectedFiles.length} files...`;
+            } else {
+                fileStatusText.textContent = `Waiting for ${targetName} to accept ${selectedFiles[0].name}...`;
+            }
             progressContainer.classList.remove('hidden');
         }
 
@@ -524,40 +584,50 @@
             let receivedSize = 0;
             const peerName = knownDevices[peerId] || "Peer";
 
-            dc.onopen = () => {
+            dc.onopen = async () => {
                 if (isSender) {
-                    console.log('Sender channel open, sending metadata...');
-                    fileStatusText.textContent = `Sending ${selectedFile.name} to ${peerName}`;
+                    console.log('Sender channel open, starting batch transfer...');
 
-                    // Send metadata first
-                    dc.send(JSON.stringify({ type: 'metadata', name: selectedFile.name, size: selectedFile.size }));
+                    for (let i = 0; i < selectedFiles.length; i++) {
+                        const file = selectedFiles[i];
+                        fileStatusText.textContent = `Sending ${file.name} (${i + 1}/${selectedFiles.length}) to ${peerName}`;
 
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const buffer = e.target.result;
-                        const CHUNK_SIZE = 16384;
-                        let offset = 0;
+                        // Send metadata
+                        dc.send(JSON.stringify({ type: 'metadata', name: file.name, size: file.size }));
 
-                        const sendNextChunk = () => {
-                            while (offset < buffer.byteLength && dc.bufferedAmount < 1024 * 1024) {
-                                const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
-                                dc.send(chunk);
-                                offset += chunk.byteLength;
+                        await new Promise((resolve) => {
+                            const reader = new FileReader();
+                            reader.onload = (e) => {
+                                const buffer = e.target.result;
+                                const CHUNK_SIZE = 16384;
+                                let offset = 0;
 
-                                const percent = Math.floor((offset / buffer.byteLength) * 100);
-                                progressBar.style.width = `${percent}%`;
-                                progressPercent.textContent = `${percent}%`;
-                            }
-                            if (offset < buffer.byteLength) {
-                                setTimeout(sendNextChunk, 10);
-                            } else {
-                                dc.send('EOF');
-                                fileStatusText.textContent = `File sent successfully to ${peerName}!`;
-                            }
-                        };
-                        sendNextChunk();
-                    };
-                    reader.readAsArrayBuffer(selectedFile);
+                                const sendNextChunk = () => {
+                                    while (offset < buffer.byteLength && dc.bufferedAmount < 1024 * 1024) {
+                                        const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+                                        dc.send(chunk);
+                                        offset += chunk.byteLength;
+
+                                        const percent = Math.floor((offset / buffer.byteLength) * 100);
+                                        progressBar.style.width = `${percent}%`;
+                                        progressPercent.textContent = `${percent}%`;
+                                    }
+                                    if (offset < buffer.byteLength) {
+                                        setTimeout(sendNextChunk, 10);
+                                    } else {
+                                        dc.send('EOF');
+                                        resolve();
+                                    }
+                                };
+                                sendNextChunk();
+                            };
+                            reader.readAsArrayBuffer(file);
+                        });
+                    }
+
+                    fileStatusText.textContent = `All ${selectedFiles.length} files sent successfully to ${peerName}!`;
+                    selectedFiles = []; // Clear for next batch
+                    updateFileListUI();
                 }
             };
 
@@ -573,6 +643,8 @@
                                 fileStatusText.textContent = `Receiving ${info.name} from ${peerName}`;
                                 receivedChunks = [];
                                 receivedSize = 0;
+                                progressBar.style.width = `0%`;
+                                progressPercent.textContent = `0%`;
                             }
                         } catch (err) { console.error('Metadata parse error', err); }
                     } else if (e.data === 'EOF') {
